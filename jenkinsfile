@@ -1,0 +1,127 @@
+pipeline {
+
+    agent any
+
+    environment {
+        APP_NAME = "devops-app"
+        DOCKER_REPO = "sujeetsr07/devops-app"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+            }
+        }
+
+        stage('SonarQube Scan') {
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    sh '''
+                    sonar-scanner
+                    '''
+                }
+            }
+        }
+
+        stage('Get Next Version') {
+            steps {
+                script {
+
+                    VERSION = sh(
+                    script: '''
+                    echo "v${BUILD_NUMBER}"
+                    ''',
+                    returnStdout: true
+                    ).trim()
+
+                    env.VERSION = VERSION
+                }
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                sh """
+                docker build -t ${DOCKER_REPO}:${VERSION} .
+                """
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+
+                    sh '''
+                    echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Push Image') {
+            steps {
+                sh """
+                docker push ${DOCKER_REPO}:${VERSION}
+                """
+            }
+        }
+
+        stage('Update GitOps Repo') {
+            steps {
+                sh '''
+                git clone https://github.com/sujeetsrahate/project-2.git
+
+                cd project-2
+
+                sed -i "s|image:.*|image: YOUR_DOCKERHUB_USERNAME/devops-app:${VERSION}|g" project2-dep.yaml
+
+                git config user.email "jenkins@local.com"
+                git config user.name "jenkins"
+
+                git add .
+
+                git commit -m "Updated image version ${VERSION}"
+
+                git push
+                '''
+            }
+        }
+    }
+
+    post {
+
+        success {
+
+            emailext(
+            subject: "Build Success",
+            body: "Application deployed successfully",
+            to: "sujeetsrahate@gmail.com"
+            )
+
+        }
+
+        failure {
+
+            emailext(
+            subject: "Build Failed",
+            body: "Pipeline failed",
+            to: "sujeetsrahate@gmail.com"
+            )
+
+        }
+    }
+}
